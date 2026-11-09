@@ -1,6 +1,8 @@
 // Turns measured differences into at most two concrete remarks. It stays silent
 // when the measurements are too thin: wrong advice trains the wrong habit.
 
+import { t } from './i18n.js';
+
 const MIN_GAP = 0.08;
 const MIN_VOICED_FRAMES = 8;
 const LOCAL_SEARCH_FRAMES = 15;
@@ -82,22 +84,19 @@ function toneRemark(label, m, y) {
   const size = Math.abs(m.move);
   const sign = Math.sign(m.move);
   if (size >= 2.5 && y.move * sign < size * 0.4) {
-    const verb = sign > 0 ? 'sale' : 'scende';
-    const yours = Math.abs(y.move) < 0.7 ? 'tu resti piatto' : y.move * sign < 0 ? `tu vai al contrario di ${round(y.move)}` : `tu solo di ${round(y.move)}`;
-    const fix = sign > 0 ? 'Porta la voce più in alto alla fine.' : 'Lascia cadere di più la voce.';
-    return { text: `${label}: il modello ${verb} di ${round(m.move)} semitoni, ${yours}. ${fix}`, severity: Math.abs(m.move - y.move) };
+    const n = round(y.move);
+    const yours = Math.abs(y.move) < 0.7 ? t('advice.yoursFlat') : y.move * sign < 0 ? t('advice.yoursOpposite', { n }) : t('advice.yoursLess', { n });
+    return { text: t(sign > 0 ? 'advice.up' : 'advice.down', { label, a: round(m.move), yours }), severity: Math.abs(m.move - y.move) };
   }
   if (size < 1.5 && Math.abs(y.move) >= 3) {
-    const verb = y.move > 0 ? 'sali' : 'scendi';
-    return { text: `${label}: il modello resta fermo, tu ${verb} di ${round(y.move)} semitoni. Tienila più piatta.`, severity: Math.abs(y.move) };
+    return { text: t(y.move > 0 ? 'advice.flatUp' : 'advice.flatDown', { label, n: round(y.move) }), severity: Math.abs(y.move) };
   }
   if (m.dip >= 1.5 && y.dip < m.dip * 0.4) {
-    return { text: `${label}: il modello scende in basso e risale, tu quasi no. Prova ad andare più giù a metà.`, severity: m.dip - y.dip };
+    return { text: t('advice.dip', { label }), severity: m.dip - y.dip };
   }
   const gap = y.mean - m.mean;
   if (Math.abs(gap) >= 3) {
-    const where = gap > 0 ? 'più in alto' : 'più in basso';
-    return { text: `${label}: rispetto al resto della frase sei ${where} del modello di ${round(gap)} semitoni.`, severity: Math.abs(gap) * 0.8 };
+    return { text: t(gap > 0 ? 'advice.higher' : 'advice.lower', { label, n: round(gap) }), severity: Math.abs(gap) * 0.8 };
   }
   return null;
 }
@@ -148,7 +147,7 @@ export function adviseTake(model, take, cuts, chars) {
   for (let i = 0; i < spans; i++) {
     const from = edges[i];
     const to = edges[i + 1];
-    const label = named ? chars[i] : `Tratto ${i + 1}`;
+    const label = named ? chars[i] : t('advice.stretch', { n: i + 1 });
     const m = measure(model, from, to);
     if (!m) continue;
     const y = measure(take, from, to);
@@ -161,7 +160,7 @@ export function adviseTake(model, take, cuts, chars) {
   }
 
   if (measured < Math.max(1, Math.ceil(spans / 2))) {
-    return { items: [], note: 'Ho sentito troppa poca voce in questo giro per commentarlo.' };
+    return { items: [], note: t('advice.tooQuiet') };
   }
 
   if (lags.length >= 3) {
@@ -170,9 +169,8 @@ export function adviseTake(model, take, cuts, chars) {
     for (const l of lags) {
       const off = l.lag - typical;
       if (Math.abs(off) < LATE_SECONDS) continue;
-      const when = off > 0 ? 'in ritardo' : 'in anticipo';
       items.push({
-        text: `${l.label}: arrivi circa ${Math.round(Math.abs(off) * 1000)} ms ${when} rispetto al resto.`,
+        text: t(off > 0 ? 'advice.late' : 'advice.early', { label: l.label, ms: Math.round(Math.abs(off) * 1000) }),
         severity: (Math.abs(off) / LATE_SECONDS) * 1.5,
         from: l.from,
         to: l.to,
@@ -184,12 +182,12 @@ export function adviseTake(model, take, cuts, chars) {
   const ySpread = percentileSpread(take.semis);
   if (mSpread !== null && ySpread !== null && mSpread >= 5 && ySpread < mSpread * 0.6) {
     items.push({
-      text: `Nell'insieme la voce è più piatta: ti muovi di ${round(ySpread)} semitoni, il modello di ${round(mSpread)}.`,
+      text: t('advice.flatOverall', { you: round(ySpread), model: round(mSpread) }),
       severity: (mSpread - ySpread) * 0.6,
     });
   }
 
   items.sort((a, b) => b.severity - a.severity);
   const top = items.slice(0, MAX_ITEMS);
-  return top.length ? { items: top } : { items: [], note: 'Nessuna differenza grande su toni e ritmo in questo giro.' };
+  return top.length ? { items: top } : { items: [], note: t('advice.noneBig') };
 }

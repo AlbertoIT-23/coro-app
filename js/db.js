@@ -48,6 +48,10 @@ export async function putTake(take) {
   await done((await store('takes', 'readwrite')).put(take));
 }
 
+export async function deleteTake(sessionId, i) {
+  await done((await store('takes', 'readwrite')).delete([sessionId, i]));
+}
+
 export async function saveSession(session, takes) {
   const tx = (await open()).transaction(['sessions', 'takes'], 'readwrite');
   tx.objectStore('sessions').put(session);

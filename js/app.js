@@ -18,6 +18,7 @@ import { colors, drawEditor, drawPitch, drawSpectrogram, drawWave } from './draw
 import { adviseTake, hanziOf, syllableCuts } from './advice.js';
 import { encodeWav } from './wav.js';
 import * as db from './db.js';
+import { detectLang, getLang, setLang, t, translatePage } from './i18n.js';
 
 const $ = (id) => document.getElementById(id);
 const MIN_SELECTION = 0.3;
@@ -26,7 +27,6 @@ const HANDLE_REACH = 30;
 const CUT_REACH = 20;
 const CUT_MARGIN = 0.06;
 const SAVE_RATE = 16000;
-const MODE_NAMES = { together: 'Insieme', fade: 'Sfumata', after: 'Dopo il modello' };
 const VIEW_DEFAULTS = { pitch: true, waves: true, spec: false, ghost: false, advice: true };
 
 const prefs = {
@@ -69,10 +69,19 @@ const state = {
 
 const newId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
-function setStatus(text, isError = false) {
+let lastStatus = null;
+
+function setStatus(key, params = {}, isError = false) {
+  lastStatus = { key, params };
   const el = $('status');
-  el.textContent = text;
+  el.textContent = t(key, params);
   el.classList.toggle('error', isError);
+}
+
+const setError = (key, params = {}) => setStatus(key, params, true);
+
+function startLabel() {
+  $('start').textContent = t(state.session?.running ? 'start.stop' : 'start.go');
 }
 
 // ---- Loading the clip ------------------------------------------------------
@@ -80,13 +89,13 @@ function setStatus(text, isError = false) {
 async function loadArrayBuffer(data, name) {
   if (state.session?.running) finish();
   stopPlayback();
-  setStatus('Sto leggendo la clip…');
+  setStatus('status.reading');
   const ctx = await getContext();
   let decoded;
   try {
     decoded = await ctx.decodeAudioData(data);
   } catch {
-    setStatus('Non riesco a leggere questo file. Prova con un altro formato.', true);
+    setError('status.badFile');
     return;
   }
   const mono = toMono(decoded);
@@ -97,7 +106,7 @@ async function loadArrayBuffer(data, name) {
   $('clip').hidden = false;
   refreshEditor();
   selectionChanged();
-  setStatus('Clip pronta. Sposta le maniglie sulla frase che vuoi.');
+  setStatus('status.clipReady');
 }
 
 function useClip({ name, mono, ctx }) {
@@ -108,7 +117,6 @@ function useClip({ name, mono, ctx }) {
   state.model = null;
   state.replay = false;
   $('clip-name').textContent = name;
-  $('zoom').textContent = 'Ingrandisci';
 }
 
 function refreshEditor() {
@@ -116,6 +124,8 @@ function refreshEditor() {
   state.editor = drawEditor($('editor'), state.clip.mono, state.clip.rate, state.view, state.sel);
   const { a, b } = state.sel;
   $('sel-info').textContent = `${a.toFixed(2)} – ${b.toFixed(2)} s · ${(b - a).toFixed(2)} s`;
+  const wide = state.view.b - state.view.a >= state.clip.dur - 1e-3;
+  $('zoom').textContent = t(wide ? 'clip.zoomIn' : 'clip.zoomOut');
 }
 
 function selectionChanged() {
@@ -248,7 +258,8 @@ function updateEstimate() {
   const total = reps * period;
   const mins = Math.floor(total / 60);
   const secs = Math.round(total % 60);
-  $('estimate').textContent = `${reps} ${reps === 1 ? 'giro' : 'giri'} · circa ${mins ? `${mins} min ` : ''}${secs} s`;
+  const time = `${mins ? `${mins} min ` : ''}${secs} s`;
+  $('estimate').textContent = t(reps === 1 ? 'setup.estimateOne' : 'setup.estimateMany', { n: reps, time });
 }
 
 async function refreshMics() {
@@ -259,7 +270,7 @@ async function refreshMics() {
     ...mics.map((m, i) => {
       const o = document.createElement('option');
       o.value = m.deviceId;
-      o.textContent = m.label || `Microfono ${i + 1}`;
+      o.textContent = m.label || t('setup.micN', { n: i + 1 });
       return o;
     }),
   );
@@ -297,7 +308,7 @@ async function start() {
   try {
     if (state.replay) await trainAgain();
     if (!state.clip) {
-      setStatus('Carica prima una clip.', true);
+      setError('status.needClip');
       return;
     }
     stopPlayback();
@@ -325,7 +336,7 @@ async function start() {
     $('shift-value').textContent = '0 ms';
     state.session.begin();
     keepScreenOn();
-    $('start').textContent = 'Ferma';
+    startLabel();
     $('start').classList.add('stop');
     renderTakes();
     renderStage();
@@ -333,10 +344,9 @@ async function start() {
     $('s-stage').scrollIntoView({ behavior: 'smooth', block: 'start' });
     requestAnimationFrame(tick);
   } catch (err) {
-    if (err?.name === 'NotAllowedError') setStatus('Serve il permesso del microfono per registrare.', true);
-    else if (err?.name === 'NotFoundError' || err?.name === 'OverconstrainedError')
-      setStatus('Microfono non trovato. Scegline un altro.', true);
-    else setStatus(`Non sono riuscito a partire: ${err?.message || err}`, true);
+    if (err?.name === 'NotAllowedError') setError('status.needMic');
+    else if (err?.name === 'NotFoundError' || err?.name === 'OverconstrainedError') setError('status.noMic');
+    else setError('status.cantStart', { error: err?.message || String(err) });
   }
 }
 
@@ -345,9 +355,10 @@ function finish() {
   if (!s) return;
   s.stop();
   releaseScreen();
-  $('start').textContent = 'Avvia';
+  startLabel();
   $('start').classList.remove('stop');
-  setStatus(s.takes.length ? `Fatto: ${s.takes.length} giri.` : 'Fermato prima della fine del primo giro.');
+  if (s.takes.length) setStatus('status.done', { n: s.takes.length });
+  else setStatus('status.stoppedEarly');
   renderTakes();
   renderStage();
   renderDiagnostics();
@@ -370,8 +381,8 @@ function tick() {
   }
   const live = s.liveView();
   if (state.views.waves) drawWave($('wave-you'), live.samples, colors().you, live.filled);
-  const volume = s.mode === 'after' ? '' : live.gain === 0 ? ' · da solo' : live.gain < 1 ? ` · modello ${Math.round(live.gain * 100)}%` : '';
-  setStatus(`Giro ${live.i + 1} di ${s.reps}${volume}`);
+  const volume = s.mode === 'after' ? '' : live.gain === 0 ? t('status.solo') : live.gain < 1 ? t('status.volume', { pct: Math.round(live.gain * 100) }) : '';
+  $('status').textContent = t('status.rep', { n: live.i + 1, total: s.reps }) + volume;
   requestAnimationFrame(tick);
 }
 
@@ -388,7 +399,7 @@ function takeRow(s, take, sessionId) {
   const samples = s.stored
     ? take.samples
     : Int16Array.from(downsample(s.slice(take), s.rate, SAVE_RATE), (v) => Math.max(-1, Math.min(1, v)) * 32767);
-  return { sessionId, i: take.i, gain: take.gain, solo: take.solo, starred: Boolean(take.starred), samples };
+  return { sessionId, i: take.i, gain: take.gain, solo: take.solo, starred: Boolean(take.starred), auto: Boolean(take.auto), samples };
 }
 
 async function persistSession(s) {
@@ -404,31 +415,35 @@ async function persistSession(s) {
     }
     const id = newId();
     const keep = keptIndexes(s.takes, $('keep-all').checked);
-    const kept = s.takes.filter((t) => keep.has(t.i));
+    const kept = s.takes.filter((take) => keep.has(take.i));
+    kept.forEach((take) => (take.auto = true));
     await db.saveSession(
       { id, clipId: state.clipId, createdAt: Date.now(), mode: s.mode, rate: SAVE_RATE, offset: s.autoOffset, reps: s.takes.length },
-      kept.map((t) => takeRow(s, t, id)),
+      kept.map((take) => takeRow(s, take, id)),
     );
-    kept.forEach((t) => (t.saved = true));
+    kept.forEach((take) => (take.saved = true));
     s.dbId = id;
     db.askToKeepData();
-    setStatus(`Fatto: ${s.takes.length} giri, salvati nello storico.`);
+    setStatus('status.saved', { n: s.takes.length });
     await refreshHistory();
     await refreshFirstEver();
     renderStage();
   } catch {
-    setStatus('Non sono riuscito a salvare questa sessione: la memoria potrebbe essere piena.', true);
+    setError('status.saveFailed');
   }
 }
 
 async function toggleStar() {
   const s = state.session;
   const take = state.shown;
-  if (!s?.dbId || !take) return;
+  if (!s?.dbId || !take || take.auto) return;
   take.starred = !take.starred;
-  if (take.saved || take.starred) {
+  if (take.starred) {
     await db.putTake(takeRow(s, take, s.dbId));
     take.saved = true;
+  } else {
+    await db.deleteTake(s.dbId, take.i);
+    take.saved = false;
   }
   renderStage();
 }
@@ -454,7 +469,7 @@ async function refreshHistory() {
   for (const s of sessions) {
     if (!names.has(s.clipId)) {
       const clip = await db.getClip(s.clipId);
-      names.set(s.clipId, clip ? clip.text || clip.name : 'Frase');
+      names.set(s.clipId, clip ? clip.text || clip.name : t('history.unnamed'));
     }
   }
   $('s-history').hidden = sessions.length === 0;
@@ -465,16 +480,17 @@ async function refreshHistory() {
       open.className = 'history-open';
       const title = document.createElement('b');
       title.textContent = names.get(s.clipId);
-      const when = new Date(s.createdAt).toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+      const when = new Date(s.createdAt).toLocaleString(getLang(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
       const line = document.createElement('span');
-      line.textContent = `${when} · ${MODE_NAMES[s.mode]} · ${s.reps} ${s.reps === 1 ? 'giro' : 'giri'}`;
+      const reps = t(s.reps === 1 ? 'history.repsOne' : 'history.repsMany', { n: s.reps });
+      line.textContent = t('history.line', { when, mode: t(`mode.${s.mode}`), reps });
       open.append(title, line);
       open.addEventListener('click', () => openStored(s.id));
       const del = document.createElement('button');
       del.className = 'btn small-btn';
-      del.textContent = 'Elimina';
+      del.textContent = t('history.delete');
       del.addEventListener('click', async () => {
-        if (!confirm('Eliminare questa sessione? Non si può annullare.')) return;
+        if (!confirm(t('history.confirm'))) return;
         if (state.session?.dbId === s.id) closeReplay();
         await db.deleteSession(s.id);
         refreshHistory();
@@ -501,7 +517,7 @@ async function openStored(id) {
   const meta = await db.getSession(id);
   const clip = meta && (await db.getClip(meta.clipId));
   if (!clip) {
-    setStatus('Non trovo più questa sessione.', true);
+    setError('status.notFound');
     return;
   }
   const rows = await db.takesOf(id);
@@ -517,7 +533,7 @@ async function openStored(id) {
   await refreshFirstEver();
   renderTakes();
   renderStage();
-  setStatus(`Sessione riaperta: ${clip.text || clip.name}`);
+  setStatus('status.reopened', { name: clip.text || clip.name });
   $('s-stage').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -564,7 +580,7 @@ function renderTakes() {
       const b = document.createElement('button');
       b.className = 'take' + (take === state.shown ? ' on' : '') + (take.solo ? ' solo' : '');
       b.textContent = take.i + 1;
-      b.title = take.solo ? 'Senza modello' : 'Con il modello';
+      b.title = t(take.solo ? 'take.solo' : 'take.withModel');
       b.setAttribute('aria-pressed', take === state.shown);
       b.addEventListener('click', () => {
         state.shown = take;
@@ -625,16 +641,15 @@ function renderStage() {
   const running = Boolean(s?.running);
 
   $('take-title').textContent = take
-    ? `Giro ${take.i + 1}${take.solo ? ' · senza modello' : ''}`
-    : running
-      ? 'Parla: il grafico compare a fine giro'
-      : 'Il tuo grafico comparirà qui';
+    ? t(take.solo ? 'title.repSolo' : 'title.rep', { n: take.i + 1 })
+    : t(running ? 'title.speak' : 'title.empty');
   $('play-row').hidden = !take || running;
   $('again').hidden = !state.replay;
   $('shift-row').hidden = Boolean(s?.stored);
-  $('you-label').textContent = running ? 'Tu, dal vivo' : 'Tu';
-  $('star').disabled = !s?.dbId;
-  $('star').textContent = take?.starred ? 'Tenuto' : 'Tieni';
+  $('you-label').textContent = t(running ? 'lane.youLive' : 'lane.you');
+  const autoSaved = Boolean(take?.auto);
+  $('star').disabled = !s?.dbId || autoSaved;
+  $('star').textContent = t(autoSaved ? 'star.auto' : take?.starred ? 'star.on' : 'star.off');
   $('star').classList.toggle('kept', Boolean(take?.starred));
 
   const bands = renderAdvice(model, shown);
@@ -677,22 +692,22 @@ function renderStage() {
 function renderDiagnostics() {
   const s = state.session;
   if (!s || s.stored) return;
-  const ms = (v) => (typeof v === 'number' ? `${Math.round(v * 1000)} ms` : 'non disponibile');
-  const yn = (v) => (v === undefined ? 'non dichiarato' : v ? 'attivo' : 'spento');
+  const ms = (v) => (typeof v === 'number' ? `${Math.round(v * 1000)} ms` : t('diag.unavailable'));
+  const yn = (v) => t(v === undefined ? 'diag.undeclared' : v ? 'diag.on' : 'diag.off');
   const m = state.micSettings || {};
   const valid = s.takes.filter((k) => !k.own && k.lag !== null).length;
   const shown = state.shown?.cache?.analysis;
   const lines = [
-    ['Microfono', state.micLabel || 'sconosciuto'],
-    ['Cancellazione eco', yn(m.echoCancellation)],
-    ['Riduzione rumore', yn(m.noiseSuppression)],
-    ['Volume automatico', yn(m.autoGainControl)],
-    ['Frequenza audio', `${s.rate} Hz`],
-    ['Latenza dichiarata', `${ms(s.ctx.baseLatency)} + ${ms(s.ctx.outputLatency)}`],
-    ['Ritardo misurato', `${Math.round(s.autoOffset * 1000)} ms (da ${valid} giri)`],
-    ['Picco microfono', `${Math.round(s.peak * 100)}%`],
+    [t('diag.mic'), state.micLabel || t('diag.unknown')],
+    [t('diag.echo'), yn(m.echoCancellation)],
+    [t('diag.noise'), yn(m.noiseSuppression)],
+    [t('diag.gain'), yn(m.autoGainControl)],
+    [t('diag.rate'), `${s.rate} Hz`],
+    [t('diag.latency'), `${ms(s.ctx.baseLatency)} + ${ms(s.ctx.outputLatency)}`],
+    [t('diag.delay'), t('diag.delayValue', { ms: Math.round(s.autoOffset * 1000), n: valid })],
+    [t('diag.peak'), `${Math.round(s.peak * 100)}%`],
   ];
-  if (shown) lines.push(['Voce riconosciuta nel giro', `${Math.round(shown.voicedRatio * 100)}%`]);
+  if (shown) lines.push([t('diag.voiced'), `${Math.round(shown.voicedRatio * 100)}%`]);
   $('diag').replaceChildren(
     ...lines.flatMap(([k, v]) => {
       const dt = document.createElement('dt');
@@ -703,7 +718,7 @@ function renderDiagnostics() {
     }),
   );
   $('level-warn').hidden = s.peak > 0.02 && s.peak < 0.98;
-  $('level-warn').textContent = s.peak >= 0.98 ? "Il microfono satura: allontanalo un po' dalla bocca." : 'Il microfono non sente quasi nulla: prova a sceglierne un altro.';
+  $('level-warn').textContent = t(s.peak >= 0.98 ? 'diag.clipping' : 'diag.silent');
 }
 
 async function playKind(kind) {
@@ -742,7 +757,7 @@ function bind() {
   });
   $('sample').addEventListener('click', async () => {
     const r = await fetch('assets/esempio.wav');
-    await loadArrayBuffer(await r.arrayBuffer(), 'Esempio sintetico: 妈 麻 马 骂');
+    await loadArrayBuffer(await r.arrayBuffer(), t('clip.sampleName'));
     $('text').value = '妈麻马骂';
     textChanged();
   });
@@ -758,10 +773,8 @@ function bind() {
     if (wide) {
       const pad = Math.max(0.5, (state.sel.b - state.sel.a) * 0.25);
       state.view = { a: Math.max(0, state.sel.a - pad), b: Math.min(state.clip.dur, state.sel.b + pad) };
-      $('zoom').textContent = 'Tutta la clip';
     } else {
       state.view = { a: 0, b: state.clip.dur };
-      $('zoom').textContent = 'Ingrandisci';
     }
     refreshEditor();
   });
@@ -776,7 +789,7 @@ function bind() {
     try {
       await refreshMics();
     } catch {
-      setStatus('Serve il permesso del microfono per elencarli.', true);
+      setError('status.needMicList');
     }
   });
   $('mic').addEventListener('change', () => {
@@ -785,6 +798,13 @@ function bind() {
   });
   $('keep-all').checked = prefs.read('coro.keepAll', false);
   $('keep-all').addEventListener('change', () => prefs.write('coro.keepAll', $('keep-all').checked));
+  document.querySelectorAll('[data-lang]').forEach((el) =>
+    el.addEventListener('click', () => {
+      setLang(el.dataset.lang);
+      prefs.write('coro.lang', getLang());
+      applyLanguage();
+    }),
+  );
   $('start').addEventListener('click', () => (state.session?.running ? finish() : start()));
   $('again').addEventListener('click', trainAgain);
   $('star').addEventListener('click', toggleStar);
@@ -823,11 +843,32 @@ function bind() {
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', redraw);
 }
 
+function applyLanguage() {
+  translatePage();
+  document.querySelectorAll('[data-lang]').forEach((el) => {
+    const on = el.dataset.lang === getLang();
+    el.classList.toggle('on', on);
+    el.setAttribute('aria-pressed', on);
+  });
+  const number = new Intl.NumberFormat(getLang());
+  [...$('gap').options].forEach((o) => (o.textContent = `${number.format(Number(o.value))} s`));
+  startLabel();
+  if (lastStatus && !state.session?.running) $('status').textContent = t(lastStatus.key, lastStatus.params);
+  updateEstimate();
+  refreshEditor();
+  renderTakes();
+  renderStage();
+  renderDiagnostics();
+  refreshHistory();
+}
+
+setLang(detectLang(prefs.read('coro.lang', null), navigator.language));
+setStatus('status.idle');
 if (!window.isSecureContext) {
   $('https-warn').hidden = false;
 }
 if (!navigator.mediaDevices?.getUserMedia || !window.AudioWorkletNode) {
-  setStatus('Questo browser non permette di registrare da qui.', true);
+  setError('status.unsupported');
   $('start').disabled = true;
 }
 if (location.protocol === 'https:' && 'serviceWorker' in navigator) {
@@ -836,4 +877,4 @@ if (location.protocol === 'https:' && 'serviceWorker' in navigator) {
 bindEditor();
 bindCuts();
 bind();
-refreshHistory();
+applyLanguage();
