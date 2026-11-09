@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Coro</title>
+<meta name="theme-color" content="#1d5fb0">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1>Coro</h1>
+    <p>Ripeti una frase insieme a una voce e confronta la tua.</p>
+  </header>
+
+  <p id="https-warn" class="note warn" hidden>Questa pagina non è in HTTPS: il browser bloccherà il microfono.</p>
+
+  <section class="card">
+    <h2>La frase</h2>
+    <div class="row">
+      <label class="btn primary">Carica audio o video<input id="file" type="file" accept="audio/*,video/*" hidden></label>
+      <button id="sample" class="btn">Clip d'esempio</button>
+    </div>
+    <div id="clip" hidden>
+      <p id="clip-name" class="small"></p>
+      <canvas id="editor" class="editor" aria-label="Forma d'onda della clip: trascina le maniglie per scegliere inizio e fine"></canvas>
+      <div class="row between">
+        <span id="sel-info" class="small mono"></span>
+        <span class="row tight">
+          <button id="zoom" class="btn small-btn">Ingrandisci</button>
+          <button id="preview" class="btn small-btn">Ascolta</button>
+        </span>
+      </div>
+      <label class="block">La frase in caratteri <span class="small">· serve per nominare le sillabe nei consigli</span>
+        <input id="text" type="text" lang="zh" autocomplete="off" placeholder="你好吗">
+      </label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>L'esercizio</h2>
+    <fieldset class="modes">
+      <legend class="sr">Modalità</legend>
+      <label><input type="radio" name="mode" value="together" checked><span><b>Insieme</b>Parli sopra il modello</span></label>
+      <label><input type="radio" name="mode" value="fade"><span><b>Sfumata</b>Il modello si abbassa: 100, 60, 30%, poi da solo</span></label>
+      <label><input type="radio" name="mode" value="after"><span><b>Dopo il modello</b>Ascolti, poi ripeti nella pausa</span></label>
+    </fieldset>
+    <div class="fields">
+      <label>Quanto
+        <span class="row tight">
+          <input id="amount" type="number" min="1" max="200" value="10" inputmode="numeric">
+          <select id="unit"><option value="reps">giri</option><option value="min">minuti</option></select>
+        </span>
+      </label>
+      <label id="gap-row">Pausa tra i giri
+        <select id="gap">
+          <option value="0.25">0,25 s</option>
+          <option value="0.5" selected>0,5 s</option>
+          <option value="1">1 s</option>
+          <option value="2">2 s</option>
+        </select>
+      </label>
+    </div>
+    <p id="estimate" class="small"></p>
+    <label class="block">Microfono
+      <select id="mic" disabled><option>Predefinito</option></select>
+    </label>
+    <button id="mic-ask" class="btn small-btn">Scegli il microfono</button>
+    <p id="mic-warn" class="note warn" hidden>Con il microfono delle cuffie Bluetooth la voce arriva degradata. Meglio quello del telefono, tenendo le cuffie per ascoltare.</p>
+    <label class="check"><input id="keep-all" type="checkbox"> Salva tutti i giri <span class="small">· altrimenti il primo, l'ultimo e quelli che segni</span></label>
+  </section>
+
+  <section id="s-stage" class="card" hidden>
+    <div class="row between">
+      <h2 id="take-title">Il tuo grafico comparirà qui</h2>
+      <button id="again" class="btn small-btn" hidden>Allena di nuovo</button>
+    </div>
+    <div class="chips" role="group" aria-label="Cosa mostrare">
+      <button class="chip" data-view="pitch">Toni</button>
+      <button class="chip" data-view="waves">Onde</button>
+      <button class="chip" data-view="spec">Spettrogramma</button>
+      <button class="chip" data-view="advice">Consigli</button>
+      <button class="chip" data-view="ghost">Prima prova</button>
+    </div>
+
+    <div id="takes-wrap" hidden>
+      <div id="takes" class="takes" role="group" aria-label="Ripetizioni"></div>
+      <p class="small">Le caselle tratteggiate sono i giri senza modello: sono quelli che dicono di più.</p>
+    </div>
+
+    <div id="panel-advice" class="advice" hidden>
+      <ul id="advice"></ul>
+      <p id="advice-note" hidden></p>
+      <p class="small">Sono misure automatiche e possono sbagliare: nel dubbio vale l'orecchio, o l'insegnante.</p>
+    </div>
+
+    <div id="panel-pitch" class="panel">
+      <div class="legend">
+        <span><i class="sw model"></i>Modello</span>
+        <span><i class="sw you"></i>Tu</span>
+        <span id="legend-ghost" hidden><i class="sw ghost"></i>Prima prova</span>
+      </div>
+      <canvas id="pitch" class="chart-pitch" aria-label="Curve dei toni di modello e voce sovrapposte, in semitoni rispetto a ciascuna voce"></canvas>
+      <p class="small">Le linee verticali separano le sillabe: se sono fuori posto, trascinale.</p>
+      <p id="pitch-note" class="note" hidden>Qui ho trovato pochissima voce: forse il giro era muto o troppo rumoroso.</p>
+    </div>
+
+    <div id="panel-waves" class="panel">
+      <p class="lane">Modello</p>
+      <canvas id="wave-model" class="chart-wave" aria-label="Forma d'onda del modello"></canvas>
+      <p class="lane" id="you-label">Tu</p>
+      <canvas id="wave-you" class="chart-wave" aria-label="Forma d'onda della tua voce"></canvas>
+    </div>
+
+    <div id="panel-spec" class="panel">
+      <p class="lane">Modello <span class="small">· fino a 8 kHz</span></p>
+      <canvas id="spec-model" class="chart-spec" aria-label="Spettrogramma del modello"></canvas>
+      <p class="lane">Tu</p>
+      <canvas id="spec-you" class="chart-spec" aria-label="Spettrogramma della tua voce"></canvas>
+    </div>
+
+    <div id="play-row" class="row wrap" hidden>
+      <button class="btn small-btn" data-play="model">Modello</button>
+      <button class="btn small-btn" data-play="you">Tu</button>
+      <button class="btn small-btn" data-play="turns">Uno dopo l'altro</button>
+      <button class="btn small-btn" data-play="ears">Uno per orecchio</button>
+      <button id="star" class="btn small-btn">Tieni</button>
+      <button id="download" class="btn small-btn">Scarica</button>
+    </div>
+
+    <label id="shift-row" class="block">Correzione a mano del ritardo: <span id="shift-value" class="mono">0 ms</span>
+      <input id="shift" type="range" min="-400" max="400" step="10" value="0">
+    </label>
+  </section>
+
+  <section id="s-history" class="card" hidden>
+    <h2>Storico</h2>
+    <ul id="history" class="history"></ul>
+    <p class="small">Le sessioni restano solo su questo dispositivo.</p>
+  </section>
+
+  <details class="card">
+    <summary>Controlli tecnici</summary>
+    <p class="small">Se qualcosa non torna, questi valori mi servono per capire perché.</p>
+    <p id="level-warn" class="note warn" hidden></p>
+    <dl id="diag" class="diag"></dl>
+  </details>
+</main>
+
+<div class="bar">
+  <p id="status" role="status" aria-live="polite">Carica una clip per iniziare.</p>
+  <button id="start" class="btn primary">Avvia</button>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
